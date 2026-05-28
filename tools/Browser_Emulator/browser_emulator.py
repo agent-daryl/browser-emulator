@@ -1,180 +1,356 @@
 #!/usr/bin/env python3
 """
-Browser Emulator - Mimics human Chromium browser behavior to avoid bot detection
+Playwright Browser — Real headless browser for web research.
+Hybrid architecture: ddgs for search + Playwright Chromium for rendering and extraction.
 """
 
-import random
-import time
-import requests
-from urllib.parse import urlparse
-from typing import Optional, Dict, Any
+from __future__ import annotations
 
-class BrowserEmulator:
-    """Simulates a human Chromium browser with realistic behavior patterns"""
-    
-    # Realistic user agents (Chromium-based browsers)
-    USER_AGENTS = [
-        # Chrome on Windows 11
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        # Chrome on macOS
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        # Chrome on Linux
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-        # Edge on Windows
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edge/123.0.0.0",
-    ]
-    
-    # Realistic accept headers
-    ACCEPT_HEADERS = [
-        "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
-        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    ]
-    
-    # Realistic accept-language headers
-    ACCEPT_LANGUAGES = [
-        "en-US,en;q=0.9",
-        "en-GB,en;q=0.8,en-US;q=0.6",
-        "en-US,en;q=0.9,es;q=0.8,pt;q=0.7",
-    ]
-    
-    def __init__(self, headless: bool = False):
-        self.session = requests.Session()
+import re
+import time
+from datetime import datetime
+from typing import Optional
+from urllib.parse import urlparse, quote_plus
+
+from ddgs import DDGS
+from playwright.sync_api import sync_playwright, Page, Browser, BrowserContext
+
+
+def clean_text(text: str, max_length: int = 50000) -> str:
+    """Collapse whitespace, remove boilerplate, truncate."""
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    text = "\n".join(lines)
+    if len(text) > max_length:
+        text = text[:max_length] + "\n... [truncated]"
+    return text.strip()
+
+
+class PlaywrightBrowser:
+    """Headless Chromium browser with research utilities."""
+
+    CHROME_UA = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
+    )
+
+    def __init__(
+        self,
+        headless: bool = True,
+        viewport_width: int = 1920,
+        viewport_height: int = 1080,
+    ):
+        self._pw = None
+        self._browser: Optional[Browser] = None
+        self._context: Optional[BrowserContext] = None
+        self._page: Optional[Page] = None
         self.headless = headless
-        self.history: list = []
-        self.last_request_time: float = 0
-        self.min_delay = 0.5  # Minimum delay between requests
-        self.max_delay = 3.0  # Maximum delay between requests
-        
-    def _get_random_headers(self, url: str) -> Dict[str, str]:
-        """Generate realistic browser headers"""
-        parsed = urlparse(url)
-        
-        headers = {
-            "User-Agent": random.choice(self.USER_AGENTS),
-            "Accept": random.choice(self.ACCEPT_HEADERS),
-            "Accept-Language": random.choice(self.ACCEPT_LANGUAGES),
-            "Accept-Encoding": "gzip, deflate, br, zstd",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Sec-Gpc": "1",
-            "Cache-Control": "max-age=0",
-            "Referer": random.choice([parsed.netloc, "https://www.google.com/", "https://www.bing.com/", ""]),
-        }
-        
-        return headers
-    
-    def _human_delay(self):
-        """Simulate human thinking and browsing delays"""
-        # Exponential-ish delay pattern like human behavior
-        base_delay = random.uniform(self.min_delay, self.max_delay)
-        
-        # Sometimes browse multiple pages (simulate following links)
-        if random.random() < 0.3:
-            follow_delay = random.uniform(2.0, 8.0)
-            time.sleep(follow_delay)
-        
-        time.sleep(base_delay)
-    
-    def _simulate_browsing_behavior(self, url: str):
-        """Simulate realistic browser behavior before making request"""
-        parsed = urlparse(url)
-        
-        # Simulate scrolling (not actually done, but we track it)
-        scroll_positions = [0, 25, 50, 75, 100]
-        for _ in scroll_positions:
-            time.sleep(random.uniform(0.1, 0.3))
-        
-        # Simulate form focus/typing if URL suggests interaction
-        if any(keyword in url.lower() for keyword in ["search", "query", "login", "form"]):
-            time.sleep(random.uniform(1.0, 3.0))
-        
-        self.history.append({
-            "url": url,
-            "timestamp": time.time(),
-            "user_agent": self.session.headers.get("User-Agent"),
-        })
-    
-    def get(self, url: str, timeout: int = 30) -> Optional[requests.Response]:
-        """Perform a GET request with human-like behavior"""
-        try:
-            # Wait before making request
-            time_since_last = time.time() - self.last_request_time
-            if time_since_last < self.min_delay:
-                time.sleep(random.uniform(self.min_delay, self.max_delay))
-            
-            # Set realistic headers
-            headers = self._get_random_headers(url)
-            self.session.headers.update(headers)
-            
-            # Simulate browsing behavior
-            self._simulate_browsing_behavior(url)
-            
-            # Make request
-            response = self.session.get(
-                url,
-                headers=headers,
-                timeout=timeout,
-                verify=True,
-            )
-            
-            self.last_request_time = time.time()
-            
-            # Follow redirects realistically (like a browser would)
-            if response.status_code in [301, 302, 303, 307, 308]:
-                redirect_url = response.headers.get("Location", "")
-                if redirect_url:
-                    time.sleep(random.uniform(0.3, 1.0))
-                    return self.get(redirect_url)
-            
-            return response
-            
-        except requests.exceptions.RequestException as e:
-            print(f"Request failed: {e}")
-            return None
-    
-    def click_link(self, url: str, link_url: str) -> Optional[requests.Response]:
-        """Simulate clicking a link with realistic behavior"""
-        # Simulate hovering over link
-        time.sleep(random.uniform(0.2, 0.8))
-        
-        # Verify target
-        time.sleep(random.uniform(0.1, 0.3))
-        
-        # Click with slight delay after hover
-        time.sleep(random.uniform(0.3, 0.6))
-        
-        return self.get(link_url)
-    
-    def scroll_page(self, url: str, duration: float = 5.0):
-        """Simulate scrolling through a page"""
-        start_time = time.time()
-        while time.time() - start_time < duration:
-            scroll_time = random.uniform(0.5, 2.0)
-            time.sleep(scroll_time)
-        self._human_delay()
-    
-    def form_fill(self, url: str, input_delay: float = 0.3) -> float:
-        """Simulate filling out a form with realistic typing delays"""
-        total_time = 0
-        # Simulate typing each character with variable delays
-        char_count = random.randint(10, 50)
-        for _ in range(char_count):
-            time.sleep(input_delay + random.uniform(0.05, 0.15))
-            total_time += input_delay
-        return total_time
-    
-    def __enter__(self):
+        self.viewport = (viewport_width, viewport_height)
+        self.history: list[str] = []
+        self.started = False
+        self._ddgs = DDGS()
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def launch(self) -> "PlaywrightBrowser":
+        """Start browser (idempotent)."""
+        if self.started:
+            return self
+        self._pw = sync_playwright().start()
+        self._browser = self._pw.chromium.launch(
+            headless=self.headless,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        self._context = self._browser.new_context(
+            user_agent=self.CHROME_UA,
+            viewport={"width": self.viewport[0], "height": self.viewport[1]},
+            locale="en-US",
+            timezone_id="America/Denver",
+        )
+        # Hide webdriver fingerprint
+        self._context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+        self._page = self._context.new_page()
+        self.started = True
         return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
-    
+
+    @property
+    def page(self) -> Page:
+        if not self.started:
+            self.launch()
+        return self._page
+
     def close(self):
-        """Clean up session"""
-        self.session.close()
+        """Shut down browser."""
+        if self._browser:
+            self._browser.close()
+        if self._pw:
+            self._pw.stop()
+        self.started = False
+
+    def __enter__(self):
+        return self.launch()
+
+    def __exit__(self, *args):
+        self.close()
+
+    # -- core actions (chainable) ------------------------------------------
+
+    def goto(
+        self, url: str, wait_until: str = "domcontentloaded", timeout: int = 30000
+    ) -> "PlaywrightBrowser":
+        self.page.goto(url, wait_until=wait_until, timeout=timeout)
+        self.history.append(url)
+        return self
+
+    def wait_network_idle(self, timeout: int = 20000):
+        """Wait until there are no network connections for 500ms."""
+        self.page.wait_for_load_state("networkidle", timeout=timeout)
+        return self
+
+    def wait_for_selector(self, selector: str, timeout: int = 15000):
+        return self
+
+    def sleep(self, secs: float):
+        time.sleep(secs)
+        return self
+
+    # -- extraction -------------------------------------------------------
+
+    def title(self) -> str:
+        return self.page.title()
+
+    def current_url(self) -> str:
+        return self.page.url
+
+    def text(self, selector: str = "body") -> str:
+        """Return visible text under *selector*."""
+        loc = self.page.locator(selector)
+        count = loc.count()
+        if count > 0:
+            raw = loc.nth(0).inner_text(timeout=5000)
+            return clean_text(raw)
+        return ""
+
+    def html(self, selector: str = "body") -> str:
+        loc = self.page.locator(selector)
+        count = loc.count()
+        if count > 0:
+            return loc.nth(0).inner_html(timeout=5000)
+        return ""
+
+    def evaluate(self, expr: str):
+        """Run JS in the page context."""
+        return self.page.evaluate(expr)
+
+    # -- smart article extraction -----------------------------------------
+
+    def scrape_article(
+        self, max_length: int = 40000
+    ) -> dict:
+        """
+        Attempt to extract the main article/content from the page.
+
+        Returns dict with keys: title, url, text, length
+        """
+        # Try most specific selectors first; fall through to body
+        for sel in [
+            "[itemprop='articleBody']",
+            "div.mw-parser-output",           # Wikipedia
+            "#mw-content-text",               # Wikipedia wrapper
+            "article",
+            ".post-content",
+            ".entry-content",
+            ".post-content-body",             # Medium
+            "#post-content",                  # Medium
+            ".ProseMirror",                   # Ghost / Substack
+            "main",
+            "#content",
+        ]:
+            loc = self.page.locator(sel)
+            if loc.count() > 0:
+                raw = loc.nth(0).inner_text(timeout=5000)
+                if len(raw) > 300:
+                    body_text = raw
+                    break
+        else:
+            body_text = self.text("body")
+
+        # Strip Wikipedia table of contents block
+        body_text = re.sub(
+            r'\n\s*Table of Contents[^:]*[:\s]*\n(?:\s*\d+[.\s].*\n?)*',
+            '\n', body_text, flags=re.IGNORECASE,
+        )
+
+        cleaned = clean_text(body_text, max_length)
+        return {
+            "title": self.title(),
+            "url": self.current_url(),
+            "text": cleaned,
+            "length": len(cleaned),
+        }
+
+    # -- search -----------------------------------------------------------
+
+    def search(
+        self, query: str, max_results: int = 10
+    ) -> list[dict[str, str]]:
+        """
+        DuckDuckGo text search (via ddgs library).
+
+        Returns list of dicts: {title, href, body}
+        """
+        raw = self._ddgs.text(query, max_results=max_results)
+        results: list[dict[str, str]] = []
+        for item in raw:
+            results.append(
+                {
+                    "title": item.get("title", ""),
+                    "href": item.get("href", ""),
+                    "body": item.get("body", ""),
+                }
+            )
+        return results
+
+    def search_and_read(
+        self, query: str, max_read: int = 3, max_chars: int = 15000
+    ) -> list[dict]:
+        """
+        Search DuckDuckGo, then visit and scrape the top *max_read* results.
+
+        Returns list of dicts with search result + scraped article or error.
+        """
+        results = self.search(query)
+        readings: list[dict] = []
+        for rank, res in enumerate(results[:max_read], start=1):
+            url = res.get("href", "")
+            if not url:
+                readings.append(
+                    {
+                        "rank": rank,
+                        "search_result": res,
+                        "success": False,
+                        "error": "no URL",
+                    }
+                )
+                continue
+            try:
+                self.goto(
+                    url, wait_until="domcontentloaded", timeout=25000
+                ).wait_network_idle(timeout=15000)
+                article = self.scrape_article(max_length=max_chars)
+                readings.append(
+                    {
+                        "rank": rank,
+                        "search_result": res,
+                        "article": article,
+                        "success": True,
+                    }
+                )
+            except Exception as e:
+                readings.append(
+                    {
+                        "rank": rank,
+                        "search_result": res,
+                        "success": False,
+                        "error": str(e),
+                    }
+                )
+        return readings
+
+    # -- interactions ----------------------------------------------------
+
+    def click(self, selector: str, timeout: int = 10000):
+        self.page.locator(selector).first.click(timeout=timeout)
+        return self
+
+    def fill(self, selector: str, value: str):
+        self.page.locator(selector).first.fill(value)
+        return self
+
+    def extract_links(self, selector: str = "body", max_links: int = 50) -> list[dict]:
+        """Return [{text, href}, ...] from page."""
+        return self.evaluate(
+            f"""() => {{
+                const links = Array.from(document.querySelectorAll('{selector} a[href]'));
+                return links.slice(0, {max_links}).map(a => ({{
+                    text: a.innerText.trim().substring(0, 200),
+                    href: a.href,
+                }}));
+            }}"""
+        )
+
+    def screenshot(self, path: str, full_page: bool = False) -> str:
+        self.page.screenshot(path=path, full_page=full_page)
+        return path
+
+
+# ---------------------------------------------------------------------------
+# Convenience wrapper for research workflows
+# ---------------------------------------------------------------------------
+
+def search(query: str, max_results: int = 10) -> list[dict[str, str]]:
+    """One-liner: search DuckDuckGo without launching a browser."""
+    ddgs = DDGS()
+    raw = ddgs.text(query, max_results=max_results)
+    return [
+        {"title": r.get("title", ""), "href": r.get("href", ""), "body": r.get("body", "")}
+        for r in raw
+    ]
+
+
+def search_and_read(
+    query: str, max_read: int = 3, max_chars: int = 15000
+) -> list[dict]:
+    """Search, then visit and scrape the top results."""
+    with PlaywrightBrowser() as b:
+        return b.search_and_read(query, max_read=max_read, max_chars=max_chars)
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) < 2:
+        print("Usage: python3 browser_emulator.py <query>")
+        print("       python3 browser_emulator.py --url <url>")
+        sys.exit(0)
+
+    if sys.argv[1] == "--url" and len(sys.argv) >= 3:
+        target_url = sys.argv[2]
+        with PlaywrightBrowser() as b:
+            b.goto(target_url).wait_network_idle()
+            article = b.scrape_article()
+            print(f"Title: {article['title']}")
+            print(f"URL:   {article['url']}")
+            print(f"Len:   {article['length']} chars")
+            print()
+            print(article["text"])
+    else:
+        query = " ".join(sys.argv[1:])
+        print(f"Searching for: {query}\n")
+        results = search(query, max_results=5)
+        for i, r in enumerate(results, 1):
+            print(f"{i}. {r['title']}")
+            print(f"   {r['href']}")
+            body_snip = r["body"][:180]
+            if body_snip:
+                print(f"   {body_snip}")
+            print()
+
+        # Optionally read top result
+        if results:
+            top = results[0].get("href", "")
+            if top:
+                print("--- Reading top result ---\n")
+                with PlaywrightBrowser() as b:
+                    b.goto(top, timeout=30000).wait_network_idle()
+                    article = b.scrape_article(max_length=8000)
+                    print(article.get("text", "(nothing extracted)")[:4000])

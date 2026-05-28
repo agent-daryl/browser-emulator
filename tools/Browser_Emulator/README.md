@@ -1,88 +1,66 @@
-# Browser Emulator
+# Playwright Browser
 
-A browser emulator that mimics human Chromium browser behavior to avoid bot detection.
+Real headless Chromium browser for web research. Hybrid architecture: `ddgs` library for DuckDuckGo search + Playwright for full-page rendering and content extraction.
 
-## Features
+## Why This Exists
 
-- **Realistic User Agents**: Rotates through real Chromium browser user agents
-- **Human-like Delays**: Simulates thinking and browsing delays between actions
-- **Behavior Patterns**: Scrolls, form filling, and link clicking simulation
-- **Header Spoofing**: Sets realistic browser headers including Accept, Accept-Language, Sec-Fetch
-- **Session Management**: Maintains cookies and headers across requests
-- **Redirect Following**: Handles redirects like a real browser
+The old browser_emulator was a `requests` session with rotated headers — it couldn't render JavaScript, got blocked by DDG, and couldn't extract structured content. This replaces it with an actual Chromium instance.
 
-## Installation
+## What It Does
 
-```bash
-pip install -r requirements.txt
-```
+- DuckDuckGo search (no API key needed)
+- Full JavaScript rendering (SPAs, client-side apps, modern sites)
+- Smart article extraction (finds main content, skips nav/ads/TOC)
+- `search_and_read` — query then scrape top results in one call
+- CLI interface for quick research from bash
 
 ## Usage
 
-### Basic Example
+### CLI
 
-```python
-from browser_emulator import BrowserEmulator
+```bash
+# Search + read top result
+python3 browser_emulator.py "Flutter Firebase multiplayer"
 
-with BrowserEmulator() as browser:
-    response = browser.get("https://example.com")
-    if response:
-        print(response.status_code)
-        print(response.text[:200])
+# Read a specific URL
+python3 browser_emulator.py --url "https://en.wikipedia.org/wiki/Whist"
 ```
 
-### Human-like Behavior
+### Python API
 
 ```python
-browser = BrowserEmulator()
+from browser_emulator import search, search_and_read, PlaywrightBrowser
 
-# Simulate scrolling
-browser.scroll_page(url, duration=5.0)
+# Search only (no browser launched)
+results = search("your query", max_results=5)
 
-# Simulate form filling
-fill_time = browser.form_fill(url)
+# Search + scrape top results
+readings = search_and_read("your query", max_read=3, max_chars=12000)
 
-# Click links realistically
-response = browser.click_link(page_url, link_url)
+# Manual control
+with PlaywrightBrowser() as b:
+    b.goto("https://example.com").wait_network_idle()
+    print(b.title())
+    print(b.text()[:200])
+    article = b.scrape_article()
+    print(article["text"])
 ```
 
-### Custom Delay Settings
+## Dependencies
 
-```python
-browser = BrowserEmulator()
-browser.min_delay = 1.0  # Minimum seconds between requests
-browser.max_delay = 4.0  # Maximum seconds between requests
+```
+playwright>=1.60.0
+ddgs
 ```
 
-## Headers Added
+Chromium is bundled by Playwright.
 
-The emulator automatically adds these headers to appear more human-like:
+## What Changed
 
-- User-Agent (rotates from real Chromium browsers)
-- Accept (varied HTML/XHTML/XML options)
-- Accept-Language (English variants)
-- Accept-Encoding (modern compression)
-- Sec-Fetch-* headers (browser security headers)
-- Referer (randomized referrer)
-
-## Files
-
-- `browser_emulator.py` - Main emulator class
-- `examples.py` - Usage examples
-- `requirements.txt` - Dependencies
-
-## Differences from Bot Detection
-
-This emulator addresses common bot detection indicators:
-
-1. **Timing**: Realistic delays between requests (not instant)
-2. **Headers**: Complete, varied browser headers
-3. **Behavior**: Simulates scrolling, hovering, and form filling
-4. **User Agent**: Rotates through real Chromium browsers
-5. **Sequence**: Follows realistic navigation patterns
-
-## Notes
-
-- Some websites may still detect and block requests
--Consider adding proxy rotation for high-volume scraping
-- The emulator simulates behavior but doesn't render JavaScript
+| Old | New |
+|---|----|
+| `requests` with rotated headers | Real Chromium via Playwright |
+| No JavaScript rendering | Full JS/SPA support |
+| Blocked by DuckDuckGo `/html/` | Uses `ddgs` library for search |
+| Couldn't extract structured content | Smart article extraction with Wikipedia support |
+| Fake delays pretending to be human | Actual load-state waits, network-idle detection |
