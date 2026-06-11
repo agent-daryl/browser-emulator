@@ -323,8 +323,16 @@ if __name__ == "__main__":
         print("       python3 browser_emulator.py --url <url>")
         sys.exit(0)
 
+    # Detect if argument is a URL (with or without --url flag)
     if sys.argv[1] == "--url" and len(sys.argv) >= 3:
         target_url = sys.argv[2]
+    elif sys.argv[1].startswith("http://") or sys.argv[1].startswith("https://"):
+        target_url = sys.argv[1]
+    else:
+        target_url = None
+
+    if target_url:
+        print(f"Reading: {target_url}\n")
         with PlaywrightBrowser() as b:
             b.goto(target_url).wait_network_idle()
             article = b.scrape_article()
