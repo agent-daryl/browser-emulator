@@ -1,153 +1,76 @@
 #!/usr/bin/env python3
 """
-Browser Emulator Examples - Demonstrates how to use the browser emulator
+Browser Emulator Examples — current API (Playwright + search).
+
+Run:  python3 examples.py
+Each example is a standalone function; they launch a real headless Chromium,
+so they need network access and a few seconds each.
 """
 
-from browser_emulator import BrowserEmulator
+from browser_emulator import search, search_and_read, PlaywrightBrowser
 
-def example_basic_usage():
-    """Basic usage example"""
-    print("=== Example: Basic Usage ===")
-    
-    with BrowserEmulator() as browser:
-        url = "https://example.com"
-        print(f"Visiting: {url}")
-        
-        response = browser.get(url)
-        
-        if response:
-            print(f"Status: {response.status_code}")
-            print(f"Content length: {len(response.text)} chars")
+
+def example_search_only():
+    """Search without launching a browser (fast, cheap)."""
+    print("=== Example: search only ===")
+    results = search("OpenShift AI RHOAI installation", max_results=5, engine="searxng")
+    for i, r in enumerate(results, 1):
+        print(f"{i}. {r.get('title', '')}")
+        print(f"   {r.get('href', '')}")
+    return results
+
+
+def example_search_and_read():
+    """Search, then visit and scrape the top results in one call."""
+    print("\n=== Example: search + read top results ===")
+    readings = search_and_read(
+        "Kubernetes operators explained",
+        max_read=2,          # quality over quantity
+        max_chars=12000,     # control output size
+        engine="searxng",    # 70+ engines vs DDG
+    )
+    for r in readings:
+        if r.get("success"):
+            print(f"\n--- {r['article']['title']} ---")
+            print(r["article"]["text"][:300], "...")
         else:
-            print("Failed to load page")
+            print(f"failed: {r.get('url')} — {r.get('error')}")
+    return readings
 
-def example_search_engine():
-    """Simulate searching through Google"""
-    print("\n=== Example: Search Simulation ===")
-    
-    with BrowserEmulator() as browser:
-        search_queries = [
-            "latest stock market news",
-            "iran conflict updates",
-            "oil prices today",
-        ]
-        
-        for query in search_queries:
-            print(f"\nSearching for: '{query}'")
-            url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
-            
-            response = browser.get(url)
-            
-            if response:
-                print(f"Search results page loaded: {len(response.text)} chars")
-            time.sleep(1)  # Simulate reading results
 
-def example_mimicking_human_behavior():
-    """Demonstrates human-like behavior simulation"""
-    print("\n=== Example: Human Behavior Simulation ===")
-    
-    with BrowserEmulator() as browser:
-        url = "https://httpbin.org/html"
-        print(f"Visiting: {url}")
-        
-        # Simulate various human behaviors
-        print("Simulating scroll behavior...")
-        browser.scroll_page(url, duration=3.0)
-        
-        print("Making request after browsing behavior...")
-        response = browser.get(url)
-        
-        if response:
-            print(f"Response status: {response.status_code}")
+def example_manual_browser():
+    """Manual control: navigate, wait for full load, extract content."""
+    print("\n=== Example: manual browser control ===")
+    with PlaywrightBrowser() as b:
+        b.goto("https://en.wikipedia.org/wiki/Web_scraping").wait_network_idle()
+        print("Title:", b.title())
+        print("First 200 chars of body:", b.text()[:200])
 
-def example_form_interaction():
-    """Simulate form filling"""
-    print("\n=== Example: Form Interaction ===")
-    
-    with BrowserEmulator() as browser:
-        url = "https://httpbin.org/forms/post"
-        print(f"Simulating form fill on: {url}")
-        
-        fill_time = browser.form_fill(url)
-        print(f"Form fill simulation took: {fill_time:.2f} seconds")
-        
-        response = browser.get(url)
-        if response:
-            print(f"Form page loaded: {response.status_code}")
+        article = b.scrape_article(max_length=5000)
+        print(f"\nScraped article: {article['length']} chars")
+        print(article["text"][:300], "...")
 
-def example_link_clicking():
-    """Simulate clicking links on a page"""
-    print("\n=== Example: Link Clicking ===")
-    
-    with BrowserEmulator() as browser:
-        base_url = "https://example.com"
-        print(f"Starting at: {base_url}")
-        
-        response = browser.get(base_url)
-        
-        if response and response.status_code == 200:
-            # Simulate clicking a link
-            print("Simulating link click behavior...")
-            response = browser.click_link(base_url, base_url)
-            
-            if response:
-                print(f"Successfully navigated to: {response.url}")
+        links = b.extract_links(max_links=5)
+        print("\nSample links:")
+        for l in links:
+            print("  -", l["text"][:50], "->", l["href"][:60])
+    return article
 
-def example_rate_limiting():
-    """Demonstrates rate limiting and pacing"""
-    print("\n=== Example: Rate Limiting ===")
-    
-    with BrowserEmulator() as browser:
-        browser.min_delay = 1.0
-        browser.max_delay = 4.0
-        
-        urls = [
-            "https://example.com/page1",
-            "https://example.com/page2", 
-            "https://example.com/page3",
-        ]
-        
-        for url in urls:
-            print(f"Requesting: {url}")
-            start_time = time.time()
-            
-            response = browser.get(url)
-            
-            elapsed = time.time() - start_time
-            print(f"Request took: {elapsed:.2f} seconds")
 
-def example_with_custom_headers():
-    """Demonstrates setting custom headers"""
-    print("\n=== Example: Custom Headers ===")
-    
-    browser = BrowserEmulator()
-    browser.session.headers.update({
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-    })
-    
-    with browser:
-        url = "https://httpbin.org/headers"
-        print(f"Requesting: {url}")
-        
-        response = browser.get(url)
-        
-        if response:
-            print("Response received")
+def example_interactions_and_screenshot():
+    """Click, fill, and capture a screenshot of a simple public form."""
+    print("\n=== Example: interactions + screenshot ===")
+    with PlaywrightBrowser() as b:
+        b.goto("https://example.com").wait_network_idle()
+        print("Page title:", b.title())
+        path = b.screenshot("/tmp/browser_emulator_example.png", full_page=True)
+        print("Screenshot saved:", path)
+    return path
+
 
 if __name__ == "__main__":
-    import time
-    
-    print("Browser Emulator Examples")
-    print("=" * 50)
-    
-    example_basic_usage()
-    # example_search_engine()  # May need API key or have rate limits
-    example_mimicking_human_behavior()
-    example_form_interaction()
-    example_link_clicking()
-    example_rate_limiting()
-    example_with_custom_headers()
-    
-    print("\n" + "=" * 50)
-    print("All examples completed!")
+    example_search_only()
+    example_search_and_read()
+    example_manual_browser()
+    example_interactions_and_screenshot()
+    print("\nAll examples complete.")

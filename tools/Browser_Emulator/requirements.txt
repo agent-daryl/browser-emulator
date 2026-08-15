@@ -1,3 +1,2 @@
 playwright>=1.60.0
 ddgs
-# Chromium bundled by Playwright (auto-installed via playwright install chromium)

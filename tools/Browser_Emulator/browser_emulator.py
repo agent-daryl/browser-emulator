@@ -1,12 +1,27 @@
 #!/usr/bin/env python3
 """
 Playwright Browser — Real headless browser for web research.
-Hybrid architecture: ddgs for search + Playwright Chromium for rendering and extraction.
+Hybrid architecture: SearXNG or ddgs for search + Playwright Chromium for rendering and extraction.
+
+Usage:
+    # Search and read top results (recommended)
+    python3 browser_emulator.py "search query"
+
+    # Read a specific URL
+    python3 browser_emulator.py --url "https://example.com/article"
+
+    # Custom search settings
+    python3 browser_emulator.py "search query" --max-read 3 --max-chars 12000
+
+    # Use SearXNG instead of DuckDuckGo (better results)
+    python3 browser_emulator.py "search query" --engine searxng
 """
 
 from __future__ import annotations
 
+import argparse
 import re
+import sys
 import time
 from datetime import datetime
 from typing import Optional
@@ -42,6 +57,7 @@ class PlaywrightBrowser:
         headless: bool = True,
         viewport_width: int = 1920,
         viewport_height: int = 1080,
+        ignore_https_errors: bool = False,
     ):
         self._pw = None
         self._browser: Optional[Browser] = None
@@ -49,11 +65,12 @@ class PlaywrightBrowser:
         self._page: Optional[Page] = None
         self.headless = headless
         self.viewport = (viewport_width, viewport_height)
+        self.ignore_https_errors = ignore_https_errors
         self.history: list[str] = []
         self.started = False
         self._ddgs = DDGS()
 
-    # -- lifecycle ---------------------------------------------------------
+   # -- lifecycle ---------------------------------------------------------
 
     def launch(self) -> "PlaywrightBrowser":
         """Start browser (idempotent)."""
@@ -69,6 +86,7 @@ class PlaywrightBrowser:
             viewport={"width": self.viewport[0], "height": self.viewport[1]},
             locale="en-US",
             timezone_id="America/Denver",
+            ignore_https_errors=self.ignore_https_errors,
         )
         # Hide webdriver fingerprint
         self._context.add_init_script(
@@ -216,15 +234,65 @@ class PlaywrightBrowser:
             )
         return results
 
+    def search_sixense(
+        self, query: str, max_results: int = 10
+    ) -> list[dict[str, str]]:
+        """
+        SearXNG search via our local search tool (70+ engines, much better results).
+        """
+        try:
+            import subprocess
+            result = subprocess.run(
+                [sys.executable, "tools/Web_Search/search.py", query],
+                capture_output=True, text=True, timeout=30
+            )
+            # Parse the formatted output
+            # Format:
+            # 1. Title
+            #    URL: https://...
+            #    Engine: startpage
+            #    Body text...
+            results = []
+            lines = result.stdout.split("\n")
+            current = {"title": "", "href": "", "body": ""}
+            for line in lines:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("===") or stripped.startswith("Searching") or stripped.startswith("Source:") or stripped.startswith("Timestamp:") or stripped.startswith("Results Found"):
+                    continue
+                # Check for numbered result
+                num_match = re.match(r'^(\d+)\.\s+(.+)$', stripped)
+                if num_match:
+                    if current.get("title"):
+                        results.append(current)
+                    current = {"title": num_match.group(2), "href": "", "body": ""}
+                elif stripped.startswith("URL:"):
+                    current["href"] = stripped[4:].strip()
+                elif stripped.startswith("Engine:"):
+                    continue  # Skip engine line
+                elif current.get("title") and not current.get("body"):
+                    current["body"] = stripped
+                elif current.get("title") and current.get("body"):
+                    current["body"] += " " + stripped
+            if current.get("title"):
+                results.append(current)
+            return results[:max_results]
+        except Exception:
+            return self.search(query, max_results)
+
     def search_and_read(
-        self, query: str, max_read: int = 3, max_chars: int = 15000
+        self, query: str, max_read: int = 3, max_chars: int = 15000,
+        engine: str = "ddgs"
     ) -> list[dict]:
         """
-        Search DuckDuckGo, then visit and scrape the top *max_read* results.
+        Search, then visit and scrape the top *max_read* results.
 
         Returns list of dicts with search result + scraped article or error.
         """
-        results = self.search(query)
+        if engine == "searxng":
+            results = self.search_sixense(query)
+        else:
+            results = self.search(query)
+
         readings: list[dict] = []
         for rank, res in enumerate(results[:max_read], start=1):
             url = res.get("href", "")
@@ -293,8 +361,41 @@ class PlaywrightBrowser:
 # Convenience wrapper for research workflows
 # ---------------------------------------------------------------------------
 
-def search(query: str, max_results: int = 10) -> list[dict[str, str]]:
-    """One-liner: search DuckDuckGo without launching a browser."""
+def search(query: str, max_results: int = 10, engine: str = "ddgs") -> list[dict[str, str]]:
+    """One-liner: search without launching a browser."""
+    if engine == "searxng":
+        try:
+            import subprocess
+            result = subprocess.run(
+                [sys.executable, "tools/Web_Search/search.py", query],
+                capture_output=True, text=True, timeout=30
+            )
+            results = []
+            lines = result.stdout.split("\n")
+            current = {"title": "", "href": "", "body": ""}
+            for line in lines:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("===") or stripped.startswith("Searching") or stripped.startswith("Source:") or stripped.startswith("Timestamp:") or stripped.startswith("Results Found"):
+                    continue
+                num_match = re.match(r'^(\d+)\.\s+(.+)$', stripped)
+                if num_match:
+                    if current.get("title"):
+                        results.append(current)
+                    current = {"title": num_match.group(2), "href": "", "body": ""}
+                elif stripped.startswith("URL:"):
+                    current["href"] = stripped[4:].strip()
+                elif stripped.startswith("Engine:"):
+                    continue
+                elif current.get("title") and not current.get("body"):
+                    current["body"] = stripped
+                elif current.get("title") and current.get("body"):
+                    current["body"] += " " + stripped
+            if current.get("title"):
+                results.append(current)
+            return results[:max_results]
+        except Exception:
+            pass
+
     ddgs = DDGS()
     raw = ddgs.text(query, max_results=max_results)
     return [
@@ -304,61 +405,102 @@ def search(query: str, max_results: int = 10) -> list[dict[str, str]]:
 
 
 def search_and_read(
-    query: str, max_read: int = 3, max_chars: int = 15000
+    query: str, max_read: int = 3, max_chars: int = 15000, engine: str = "ddgs"
 ) -> list[dict]:
     """Search, then visit and scrape the top results."""
     with PlaywrightBrowser() as b:
-        return b.search_and_read(query, max_read=max_read, max_chars=max_chars)
+        return b.search_and_read(query, max_read=max_read, max_chars=max_chars, engine=engine)
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point
+# CLI entry point — proper argparse, flags don't get swallowed into query
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    import sys
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Browser Emulator — headless Chromium for web research",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  %(prog)s "OpenShift routes documentation"
+  %(prog)s --url "https://docs.openshift.com/networking.html"
+  %(prog)s "search query" --max-read 3 --max-chars 12000
+  %(prog)s "search query" --engine searxng
+  %(prog)s --url "https://example.com" --text-only
+"""
+    )
+    parser.add_argument("query", nargs="?", default=None, help="Search query")
+    parser.add_argument("--url", help="Read a specific URL directly")
+    parser.add_argument("--max-read", type=int, default=3, help="Number of results to read (default: 3)")
+    parser.add_argument("--max-chars", "-m", type=int, default=12000, help="Max characters per article (default: 12000)")
+    parser.add_argument("--engine", choices=["ddgs", "searxng"], default="ddgs",
+                        help="Search engine: ddgs (DuckDuckGo) or searxng (70+ engines, better results)")
+    parser.add_argument("--text-only", action="store_true", help="Strip nav/footer/ads, return only text content")
+    parser.add_argument("--search-only", action="store_true", help="Only search, don't read results")
+    parser.add_argument("--ignore-https-errors", action="store_true",
+                        help="Ignore HTTPS certificate errors (self-signed certs, etc)")
+    return parser
 
-    if len(sys.argv) < 2:
-        print("Usage: python3 browser_emulator.py <query>")
-        print("       python3 browser_emulator.py --url <url>")
-        sys.exit(0)
 
-    # Detect if argument is a URL (with or without --url flag)
-    if sys.argv[1] == "--url" and len(sys.argv) >= 3:
-        target_url = sys.argv[2]
-    elif sys.argv[1].startswith("http://") or sys.argv[1].startswith("https://"):
-        target_url = sys.argv[1]
-    else:
-        target_url = None
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
 
-    if target_url:
-        print(f"Reading: {target_url}\n")
-        with PlaywrightBrowser() as b:
-            b.goto(target_url).wait_network_idle()
-            article = b.scrape_article()
+    if args.url:
+        # -- URL mode: read a specific page ---------------------------------
+        print(f"Reading: {args.url}\n")
+        with PlaywrightBrowser(ignore_https_errors=args.ignore_https_errors) as b:
+            b.goto(args.url, wait_until="domcontentloaded", timeout=30000)
+            b.page.wait_for_timeout(3000)
+            article = b.scrape_article(max_length=args.max_chars)
             print(f"Title: {article['title']}")
             print(f"URL:   {article['url']}")
             print(f"Len:   {article['length']} chars")
             print()
             print(article["text"])
-    else:
-        query = " ".join(sys.argv[1:])
-        print(f"Searching for: {query}\n")
-        results = search(query, max_results=5)
+
+    elif args.query:
+        # -- Search mode ----------------------------------------------------
+        print(f"Searching for: {args.query}\n")
+        print(f"Engine: {args.engine}")
+        results = search(args.query, max_results=5, engine=args.engine)
+
+        if not results:
+            print("[NO RESULTS] Try a different query or use --engine searxng for better results.\n")
+            return
+
         for i, r in enumerate(results, 1):
             print(f"{i}. {r['title']}")
             print(f"   {r['href']}")
-            body_snip = r["body"][:180]
+            body_snip = r["body"][:200] if r.get("body") else ""
             if body_snip:
                 print(f"   {body_snip}")
             print()
 
-        # Optionally read top result
-        if results:
-            top = results[0].get("href", "")
-            if top:
-                print("--- Reading top result ---\n")
-                with PlaywrightBrowser() as b:
-                    b.goto(top, timeout=30000).wait_network_idle()
-                    article = b.scrape_article(max_length=8000)
-                    print(article.get("text", "(nothing extracted)")[:4000])
+        if not args.search_only:
+            # Read top results
+            if len(results) > 0:
+                print(f"--- Reading top {min(args.max_read, len(results))} results ---\n")
+                with PlaywrightBrowser(ignore_https_errors=args.ignore_https_errors) as b:
+                    for rank, res in enumerate(results[:args.max_read], start=1):
+                        url = res.get("href", "")
+                        if not url:
+                            continue
+                        try:
+                            print(f"--- Result {rank}: {res.get('title', '')} ---")
+                            print(f"URL: {url}")
+                            b.goto(url, wait_until="domcontentloaded", timeout=25000)
+                            b.wait_network_idle(timeout=15000)
+                            article = b.scrape_article(max_length=args.max_chars)
+                            print(f"Title: {article['title']}")
+                            print(f"Length: {article['length']} chars")
+                            print()
+                            print(article["text"][:args.max_chars])
+                            print()
+                        except Exception as e:
+                            print(f"[ERROR reading result {rank}] {e}\n")
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
