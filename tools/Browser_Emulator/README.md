@@ -64,3 +64,11 @@ Chromium is bundled by Playwright.
 | Blocked by DuckDuckGo `/html/` | Uses `ddgs` library for search |
 | Couldn't extract structured content | Smart article extraction with Wikipedia support |
 | Fake delays pretending to be human | Actual load-state waits, network-idle detection |
+
+## Current Version (2026-07-24+)
+
+The current version adds proper CLI argument parsing (query first, flags after),
+`--engine searxng` (70+ engines via the local SearXNG client), `--text-only` (strip
+nav/footer/ads), and `--search-only`. Full CLI reference, quality rules, and
+anti-patterns: see **`SKILL.md`** in this directory — that is the model-facing
+context file.
